@@ -14,8 +14,8 @@ def getIdIdxMap(nw):
     idx = np.arange(len(ids))
     return dict(zip(ids.astype(str), idx))
 
-def getResults(resultspath, prefix, count, delta):
-    files = [resultspath+'/'+p for p in os.listdir(resultspath) if p.startswith(prefix)]
+def getResults(resultspath, count, prefix='Results_', delta=1):
+    files = [resultspath+'/'+p for p in os.listdir(resultspath) if p.startswith(prefix) and p.split('_')[1].split('.')[0].isdigit()]
 
     # results is a tuple of (modelInfo, resultsAbs, eigvalAbsLM, eigvecAbsLM, resultsRel, eigvalRelLM, eigvecRelLM)
     def loadFile(fname):

@@ -17,7 +17,6 @@ import pandas as pd
 from joblib import Parallel, delayed
 import multiprocessing
 
-#sys.path.append(os.path.expanduser("~/OneDrive/Rich/Software/PythonFoodWebs"))
 sys.path.append("..")
 from Sloppy.computeHessian import LMHessian
 from Sloppy.computeHessian import Jacobian
@@ -144,11 +143,11 @@ def processEigValVecResults(model, initB, eigVal, eigVec, modelIdx):
     relEigVal = eigVal/eigVal[0]
     nBigVal = len(relEigVal > eigRatioThr)
 
+    print("Processing eigenvalues and eigenvectors of model %d"%modelIdx)
     for i in range(len(relEigVal)):
         # for each eigenvalue, get directions (parameters) in eigenvector above
         # some threshold magnitude
         valRatio = relEigVal[i]
-        print("Model %d, axis scale: %g"%(modelIdx, np.sqrt(valRatio)))
         vec = eigVec[i]
         vecIndices = np.argsort(np.abs(vec))[::-1]
         maxComponent = np.abs(vec[vecIndices[0]])
@@ -189,7 +188,7 @@ def getLMHessian(model, initB, modelIdx, var, title):
 # compared to finite diff approximation, largest LM eigenvalues are close, smaller eigenvalues are not
 # the agreement of the stiff (largest) eigenvalues is in agreement with Brown and Sethna's results
 # and allows the LM approximation to give useful results
-def runLMAnalysis(model, initB, modelIdx, var, title, jac, lmhessRel, lmhessAbs):
+def runLMAnalysis(model, initB, modelIdx, var, title, lmhessRel, lmhessAbs):
     (eigvalRelLM, eigvecRelLM) = analyzeLMHessian(lmhessRel, modelIdx)
     resultsRel, nBigRel = processEigValVecResults(model, initB, eigvalRelLM, eigvecRelLM, modelIdx) if eigvalRelLM is not None else (None,None)
 
@@ -208,9 +207,8 @@ def runModel(i, S, C, activity, outbase, finalT):
     np.random.seed(i)
     while True:
         model = getATNModel(S, C, activity, finalT=finalT)
-        wtdMnTL = (model.tl*model.binit).sum()/model.binit.sum()
         modelInfo = {"modelIdx": i,
-                          "wtdMnTL": wtdMnTL,
+                          "wtdMnTL": (model.tl*model.binit).sum()/model.binit.sum(),
                           "S": model.s,
                           "C": model.C,
                           "B": model.B,
@@ -235,8 +233,8 @@ def analyzeHessian(i, outbase):
     print("analyzeModel %d"%i)
     res = fromDisk(getFilename(outbase+"_intermed", i))
     if res is not None:
-        modelInfo, model, initB, title, jacRel, lmhessRel, jacAbs, lmhessAbs = res
-        res = runLMAnalysis(model, initB, i, var, title, jacRel, lmhessRel, jacAbs, lmhessAbs)
+        modelInfo, model, initB, title, jac, lmhessRel, lmhessAbs = res
+        res = runLMAnalysis(model, initB, i, var, title, lmhessRel, lmhessAbs)
         if res is not None and res[0] is not None:
             filename = getFilename(outbase, i)
             toDisk((modelInfo,)+res, filename)
@@ -248,17 +246,23 @@ def analyzeHessian(i, outbase):
 # set up to allow easy parallelization
 # results written to (local) disk, returns filename
 def analyzeJacobian(i, outbase):
-    def responseMagnitude(jac):
+    def rawResponseMagnitude(jac):
         return math.sqrt((jac*jac).sum())
 
-    def responseMax(jac):
-        return np.max(np.abs(jac))
+    def responseMagnitude(jac, initB):
+        return math.sqrt((jac*jac).sum())/initB.sum()
+
+    def responseMax(jac, initB):
+        return np.max(np.abs(jac))/initB.sum()
 
     res = fromDisk(getFilename(outbase+"_intermed", i))
     if res is not None:
         modelInfo, model, initB, title, jac, lmhessRel, lmhessAbs = res
-        return [i, responseMagnitude(jac), responseMax(jac)]
-    return [i]
+        rawRespMag = rawResponseMagnitude(jac)
+        respMag = responseMagnitude(jac, initB)
+        respMax = responseMax(jac, initB)
+        return [i, rawRespMag, math.log10(rawRespMag), respMag, math.log10(respMag), respMax, math.log10(respMax)]
+    return None
 
 # use joblib to parallelize model iteration loop
 # possibly use dask.distributed, integrated with joblib, to distribute across a cluster like AWS EC2
@@ -278,6 +282,7 @@ def atnParamSens_BuildData(S=30, C=0.15, runParallel=True, nIter=100, outbase="S
     return results
 
 def atnParamSens_ProcessHessians(runParallel=True, nIter=100, outbase="SloppyResults", seed=None):
+    print("Analyzing Hessians")
     seed = 0 if seed is None else seed
     seedRange = range(seed, seed+nIter)
     if runParallel:
@@ -291,11 +296,18 @@ def atnParamSens_ProcessHessians(runParallel=True, nIter=100, outbase="SloppyRes
 # process jacobian matrices to find various measures of system sensitivity to parameter perturbation
 #
 def atnParamSens_ProcessJacobians(nIter=100, outbase="SloppyResults", seed=None):
+    print("Analyzing Jacobians")
     seed = 0 if seed is None else seed
     seedRange = range(seed, seed+nIter)
-    cols = ["idx", "respMag", "maxResp"]
+    cols = ["idx", "rawResp", "logRawResp", "resp", "logResp", "respMax", "logRespMax"]
     results = [analyzeJacobian(i, outbase) for i in seedRange]
+    results = [res for res in results if res is not None]
     pd.DataFrame(results, columns=cols).to_csv(outbase+"_ResponseMag.csv", index=None)
+
+def atnParamSens_Analyze(runParallel=True, nIter=100, outbase="SloppyResults", seed=None):
+    #atnParamSens_BuildData(S=S, C=C, runParallel=runParallel, nIter=nIter, outbase=outbase, seed=seed, activity=activity, finalT=finalT)
+    atnParamSens_ProcessHessians(runParallel=runParallel, nIter=nIter, outbase=outbase, seed=seed)
+    atnParamSens_ProcessJacobians(nIter=nIter, outbase=outbase, seed=seed)
 
 def atnParamSens(S=30, C=0.15, runParallel=True, nIter=100, finalT=5000, outbase="SloppyResults", seed=None, activity=False):
     atnParamSens_BuildData(S=S, C=C, runParallel=runParallel, nIter=nIter, outbase=outbase, seed=seed, activity=activity, finalT=finalT)
